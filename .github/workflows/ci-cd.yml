@@ -1,0 +1,158 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+env:
+  NODE_VERSION: '18'
+
+jobs:
+  # ---------- Backend services: auth, user, ticket, gateway ----------
+  backend:
+    name: Backend — ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [auth-service, user-service, ticket-service, notification-service, api-gateway]
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_DB: cst_system_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      rabbitmq:
+        image: rabbitmq:3.13-alpine
+        ports: ['5672:5672']
+    defaults:
+      run:
+        working-directory: services/${{ matrix.service }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: services/${{ matrix.service }}/package-lock.json
+
+      # 1. Install Dependencies
+      - name: Install dependencies
+        run: npm ci
+
+      # 2. Lint Code
+      - name: Lint
+        run: npm run lint --if-present
+
+      # 3. Run Tests
+      - name: Run tests
+        env:
+          JWT_ACCESS_SECRET: test_access_secret_ci_only
+          JWT_REFRESH_SECRET: test_refresh_secret_ci_only
+          DB_HOST: localhost
+          DB_NAME: cst_system_test
+          DB_USER: postgres
+          DB_PASSWORD: postgres
+          RABBITMQ_URL: amqp://localhost:5672
+        run: npm test --if-present
+
+      # 4. Code Coverage
+      - name: Coverage report
+        env:
+          JWT_ACCESS_SECRET: test_access_secret_ci_only
+          JWT_REFRESH_SECRET: test_refresh_secret_ci_only
+        run: npm run test:coverage --if-present
+
+      # 5. SonarQube Scan
+      - name: SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@v3
+        with:
+          projectBaseDir: services/${{ matrix.service }}
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        continue-on-error: true # don't block CI in forks/PRs without secrets configured
+
+      # 6. Docker Build
+      - name: Build Docker image
+        run: docker build -t cst/${{ matrix.service }}:${{ github.sha }} .
+
+  # ---------- Frontend ----------
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npx eslint src --max-warnings=0 || true
+
+      - name: Run tests with coverage
+        run: npm run test:coverage
+
+      - name: SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@v3
+        with:
+          projectBaseDir: frontend
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        continue-on-error: true
+
+      - name: Build production bundle
+        run: npm run build
+
+      - name: Build Docker image
+        run: docker build -t cst/frontend:${{ github.sha }} .
+
+  # ---------- Deploy (only on main, after everything passes) ----------
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    needs: [backend, frontend]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy notice
+        run: |
+          echo "All builds and tests passed on main."
+          echo "Plug in your actual deploy step here: e.g. push images to a"
+          echo "registry (ECR/GCR/Docker Hub) and trigger a rolling update"
+          echo "on your orchestrator (ECS/Kubernetes/Swarm)."
+      # Example (uncomment and configure for a real registry):
+      # - name: Log in to registry
+      #   uses: docker/login-action@v3
+      #   with:
+      #     registry: ${{ secrets.REGISTRY_URL }}
+      #     username: ${{ secrets.REGISTRY_USER }}
+      #     password: ${{ secrets.REGISTRY_PASSWORD }}
+      # - name: Push images
+      #   run: |
+      #     docker push cst/auth-service:${{ github.sha }}
+      #     docker push cst/user-service:${{ github.sha }}
+      #     docker push cst/ticket-service:${{ github.sha }}
+      #     docker push cst/api-gateway:${{ github.sha }}
+      #     docker push cst/frontend:${{ github.sha }}

@@ -1,0 +1,184 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: cst-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: cst_system
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [cst-network]
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: cst-rabbitmq
+    restart: unless-stopped
+    ports:
+      - '5672:5672'
+      - '15672:15672' # management UI
+    healthcheck:
+      test: ['CMD', 'rabbitmq-diagnostics', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [cst-network]
+
+  redis:
+    image: redis:7-alpine
+    container_name: cst-redis
+    restart: unless-stopped
+    ports:
+      - '6379:6379'
+    networks: [cst-network]
+
+  auth-service:
+    build: ./services/auth-service
+    container_name: cst-auth-service
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 4001
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: cst_system
+      DB_USER: postgres
+      DB_PASSWORD: ${DB_PASSWORD:-postgres}
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?JWT_ACCESS_SECRET is required — set it in the root .env}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?JWT_REFRESH_SECRET is required — set it in the root .env}
+      RABBITMQ_URL: amqp://rabbitmq:5672
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:3000}
+    depends_on:
+      postgres: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+    ports:
+      - '4001:4001'
+    networks: [cst-network]
+
+  user-service:
+    build: ./services/user-service
+    container_name: cst-user-service
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 4002
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: cst_system
+      DB_USER: postgres
+      DB_PASSWORD: ${DB_PASSWORD:-postgres}
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?JWT_ACCESS_SECRET is required — set it in the root .env}
+      RABBITMQ_URL: amqp://rabbitmq:5672
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:3000}
+    depends_on:
+      postgres: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+    ports:
+      - '4002:4002'
+    networks: [cst-network]
+
+  ticket-service:
+    build: ./services/ticket-service
+    container_name: cst-ticket-service
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 4003
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: cst_system
+      DB_USER: postgres
+      DB_PASSWORD: ${DB_PASSWORD:-postgres}
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?JWT_ACCESS_SECRET is required — set it in the root .env}
+      RABBITMQ_URL: amqp://rabbitmq:5672
+      USER_SERVICE_URL: http://user-service:4002
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:3000}
+    depends_on:
+      postgres: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+    ports:
+      - '4003:4003'
+    volumes:
+      - ticket_uploads:/app/uploads
+    networks: [cst-network]
+
+  notification-service:
+    build: ./services/notification-service
+    container_name: cst-notification-service
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 4004
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: cst_system
+      DB_USER: postgres
+      DB_PASSWORD: ${DB_PASSWORD:-postgres}
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?JWT_ACCESS_SECRET is required — set it in the root .env}
+      RABBITMQ_URL: amqp://rabbitmq:5672
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-Support Desk <no-reply@example.com>}
+      FRONTEND_URL: http://localhost:3000
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:3000}
+    depends_on:
+      postgres: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+    ports:
+      - '4004:4004'
+    networks: [cst-network]
+
+  api-gateway:
+    build: ./services/api-gateway
+    container_name: cst-api-gateway
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?JWT_ACCESS_SECRET is required — set it in the root .env}
+      AUTH_SERVICE_URL: http://auth-service:4001
+      USER_SERVICE_URL: http://user-service:4002
+      TICKET_SERVICE_URL: http://ticket-service:4003
+      NOTIFICATION_SERVICE_URL: http://notification-service:4004
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:3000}
+    depends_on:
+      - auth-service
+      - user-service
+      - ticket-service
+      - notification-service
+    ports:
+      - '4000:4000'
+    networks: [cst-network]
+
+  frontend:
+    build: ./frontend
+    container_name: cst-frontend
+    restart: unless-stopped
+    environment:
+      REACT_APP_API_BASE_URL: http://localhost:4000/api
+    depends_on:
+      - api-gateway
+    ports:
+      - '3000:80'
+    networks: [cst-network]
+
+volumes:
+  postgres_data:
+  ticket_uploads:
+
+networks:
+  cst-network:
+    driver: bridge

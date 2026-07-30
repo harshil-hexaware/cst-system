@@ -1,0 +1,175 @@
+openapi: 3.0.3
+info:
+  title: Customer Support Ticketing System API
+  version: 1.0.0
+  description: >
+    Public API surface exposed via the API Gateway. Auth endpoints are
+    unauthenticated; all others require a Bearer access token issued by
+    POST /api/auth/login.
+servers:
+  - url: /api
+tags:
+  - name: Auth
+  - name: Users
+  - name: Tickets
+paths:
+  /auth/register:
+    post:
+      tags: [Auth]
+      summary: Register a new user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password, firstName, lastName]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, minLength: 10 }
+                firstName: { type: string }
+                lastName: { type: string }
+                role: { type: string, enum: [CUSTOMER, AGENT, MANAGER, ADMIN], default: CUSTOMER }
+      responses:
+        '201': { description: User registered }
+        '409': { description: Email already taken }
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Log in and receive access/refresh tokens
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string }
+      responses:
+        '200': { description: Login successful, returns accessToken/refreshToken }
+        '401': { description: Invalid credentials }
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Exchange a refresh token for a new access token
+      responses:
+        '200': { description: New access token issued }
+  /users/me:
+    get:
+      tags: [Users]
+      summary: Get the current user's profile
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Profile returned }
+    patch:
+      tags: [Users]
+      summary: Update the current user's profile
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Profile updated }
+  /users:
+    get:
+      tags: [Users]
+      summary: List users (admin only)
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Paginated user list }
+  /tickets:
+    post:
+      tags: [Tickets]
+      summary: Create a ticket (customer)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [subject, description, categoryId]
+              properties:
+                subject: { type: string }
+                description: { type: string }
+                categoryId: { type: integer }
+                priority: { type: string, enum: [LOW, MEDIUM, HIGH, CRITICAL] }
+      responses:
+        '201': { description: Ticket created }
+    get:
+      tags: [Tickets]
+      summary: List tickets, scoped to the caller's role
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Paginated ticket list }
+  /tickets/{id}:
+    get:
+      tags: [Tickets]
+      summary: Get a single ticket with comments, attachments, history
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Ticket detail }
+        '403': { description: Not your ticket }
+        '404': { description: Not found }
+  /tickets/{id}/status:
+    patch:
+      tags: [Tickets]
+      summary: Transition ticket status (allowed transitions enforced by workflow)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, enum: [OPEN, IN_PROGRESS, ON_HOLD, ESCALATED, RESOLVED, CLOSED, REOPENED] }
+      responses:
+        '200': { description: Status updated }
+        '400': { description: Invalid transition }
+        '403': { description: Role not permitted for this transition }
+  /tickets/{id}/assign:
+    post:
+      tags: [Tickets]
+      summary: Manually assign a ticket to an agent (manager/admin)
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Ticket assigned }
+  /tickets/{id}/comments:
+    post:
+      tags: [Tickets]
+      summary: Add a public comment or internal note
+      security: [{ bearerAuth: [] }]
+      responses:
+        '201': { description: Comment added }
+  /tickets/{id}/attachments:
+    post:
+      tags: [Tickets]
+      summary: Upload an attachment (multipart/form-data, field name "file")
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        '201': { description: Attachment uploaded }
+  /tickets/dashboard/summary:
+    get:
+      tags: [Tickets]
+      summary: Role-scoped ticket count summary for dashboards
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Summary counts }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT

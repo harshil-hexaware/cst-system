@@ -1,0 +1,6 @@
+{
+  "env": { "node": true, "es2021": true, "mocha": true },
+  "extends": "eslint:recommended",
+  "parserOptions": { "ecmaVersion": 2021, "sourceType": "script" },
+  "rules": { "no-unused-vars": ["warn", { "args": "none" }], "no-console": "off" }
+}
